@@ -4,6 +4,7 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 import os
 import re
+from dhooks import Webhook
 
 # Set up file paths for the workflow
 current_file_directory = os.path.dirname(os.path.abspath(__file__))
@@ -124,6 +125,25 @@ def transform_data(**context):
         print(f"Error occurred while transforming data: {str(e)}")
         raise
 
+class WorkflowNotifier:
+    def __init__(self, webhook_url):
+        self.webhook = Webhook(webhook_url)
+
+    def send_discord_message(self, message):
+        try:
+            self.webhook.send(message)
+            print(f"Message sent successfully at {datetime.now()}")
+        except Exception as e:
+            print(f"Error sending message: {str(e)}")
+
+def send_notification(**context):
+    """
+    Send a notification after workflow execution
+    """
+    webhook_url = "YOUR_DISCORD_WEBHOOK_URL"
+    notifier = WorkflowNotifier(webhook_url)
+    notifier.send_discord_message("Workflow 'process_web_log' has been completed successfully.")
+
 # Task to extract IP addresses from the log file
 extract_data = PythonOperator(
     task_id='extract_data',
@@ -147,5 +167,13 @@ load_data = BashOperator(
     dag=dag
 )
 
+# Task to notify that the process is done
+send_notification = PythonOperator(
+    task_id='send_notification',
+    python_callable=send_notification,
+    provide_context=True,
+    dag=dag
+)
+
 # Define the order of task execution
-scan_for_log >> extract_data >> transform_data >> load_data
+scan_for_log >> extract_data >> transform_data >> load_data >> send_notification
