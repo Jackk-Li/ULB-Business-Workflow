@@ -1,7 +1,7 @@
-from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
+from datetime import datetime, timedelta
 import os
 import re
 from dhooks import Webhook
@@ -13,6 +13,9 @@ LOG_DIR = os.path.join(current_file_directory, "the_logs")
 
 # Create output directory if it doesn't exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Discord webhook configuration
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1308091679710122014/4IlLt9cwkgqZ5y4wg2-VYX9zIpVsKyCS2verW3646KqadQiPlbAOimF6aEjVzJN4nx3A"
 
 # DAG configuration parameters
 default_args = {
@@ -32,20 +35,6 @@ dag = DAG(
     description='Process web server logs and extract IP addresses',
     schedule_interval='@daily',
     catchup=False
-)
-
-# Task to check if the input log file exists
-scan_for_log = BashOperator(
-    task_id='scan_for_log',
-    bash_command=f'''
-        if [ -e {os.path.join(LOG_DIR, "log.txt")} ]; then
-            echo "Log file found"
-        else
-            echo "Log file not found"
-            exit 1
-        fi
-    ''',
-    dag=dag
 )
 
 def extract_ip_addresses(**context):
@@ -125,26 +114,47 @@ def transform_data(**context):
         print(f"Error occurred while transforming data: {str(e)}")
         raise
 
-class WorkflowNotifier:
-    def __init__(self, webhook_url):
-        self.webhook = Webhook(webhook_url)
-
-    def send_discord_message(self, message):
-        try:
-            self.webhook.send(message)
-            print(f"Message sent successfully at {datetime.now()}")
-        except Exception as e:
-            print(f"Error sending message: {str(e)}")
-
-def send_notification(**context):
+def send_discord_notification(task_name, status):
     """
-    Send a notification after workflow execution
+    Send notification to Discord about task status
+    
+    Args:
+        task_name (str): Name of the task
+        status (str): Status message to send
     """
-    webhook_url = "YOUR_DISCORD_WEBHOOK_URL"
-    notifier = WorkflowNotifier(webhook_url)
-    notifier.send_discord_message("Workflow 'process_web_log' has been completed successfully.")
+    try:
+        webhook = Webhook(DISCORD_WEBHOOK_URL)
+        message = f"**Workflow Update: {task_name}**\n"
+        message += f"Status: {status}\n"
+        message += f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        webhook.send(message)
+    except Exception as e:
+        print(f"Error sending Discord notification: {str(e)}")
+        raise
 
-# Task to extract IP addresses from the log file
+def final_notification(**context):
+    """
+    Send final workflow completion notification
+    """
+    send_discord_notification(
+        "process_web_log",
+        "Workflow completed successfully! Log processing and archiving finished."
+    )
+
+# Task definitions
+scan_for_log = BashOperator(
+    task_id='scan_for_log',
+    bash_command=f'''
+        if [ -e {os.path.join(LOG_DIR, "log.txt")} ]; then
+            echo "Log file found"
+        else
+            echo "Log file not found"
+            exit 1
+        fi
+    ''',
+    dag=dag
+)
+
 extract_data = PythonOperator(
     task_id='extract_data',
     python_callable=extract_ip_addresses,
@@ -152,7 +162,6 @@ extract_data = PythonOperator(
     dag=dag
 )
 
-# Task to filter out specific IP address
 transform_data = PythonOperator(
     task_id='transform_data',
     python_callable=transform_data,
@@ -160,20 +169,18 @@ transform_data = PythonOperator(
     dag=dag
 )
 
-# Task to archive the processed data
 load_data = BashOperator(
     task_id='load_data',
     bash_command=f'tar -czf {os.path.join(current_file_directory, "weblog.tar")} -C {OUTPUT_DIR} transformed_data.txt',
     dag=dag
 )
 
-# Task to notify that the process is done
 send_notification = PythonOperator(
     task_id='send_notification',
-    python_callable=send_notification,
+    python_callable=final_notification,
     provide_context=True,
     dag=dag
 )
 
-# Define the order of task execution
+# Define task sequence
 scan_for_log >> extract_data >> transform_data >> load_data >> send_notification
